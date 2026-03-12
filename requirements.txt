@@ -2,3 +2,9 @@ requests>=2.32.0
 beautifulsoup4>=4.12.0
 lxml>=5.2.0
 langdetect>=1.0.9
+requests
+beautifulsoup4
+langdetect
+pymorphy3
+nltk
+regex
