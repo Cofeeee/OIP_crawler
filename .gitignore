@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Local generated files
+dump/
+dump_depth/
+*.zip
+
+# Index/output files
+index.txt
+index_depth.txt
+
+# pytest / caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
