@@ -3,67 +3,8 @@ import json
 from collections import defaultdict
 from pathlib import Path
 
-import nltk
-import regex as re
-from bs4 import BeautifulSoup
-from pymorphy3 import MorphAnalyzer
 
-
-def ensure_nltk_resources() -> None:
-    try:
-        nltk.data.find("corpora/stopwords")
-    except LookupError:
-        nltk.download("stopwords")
-
-
-def load_stopwords(lang: str) -> set[str]:
-    from nltk.corpus import stopwords
-
-    if lang == "ru":
-        return set(stopwords.words("russian"))
-    if lang == "en":
-        return set(stopwords.words("english"))
-    raise ValueError(f"Unsupported language: {lang}")
-
-
-CUSTOM_GARBAGE = {
-    "nbsp", "html", "body", "div", "span", "href", "http", "https",
-    "img", "src", "script", "style", "php", "wiki"
-}
-
-
-def html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    text = soup.get_text(separator=" ")
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def extract_tokens(text: str, stop_words: set[str]) -> list[str]:
-    raw_tokens = re.findall(r"\p{L}+", text.lower())
-
-    result = []
-    for token in raw_tokens:
-        if len(token) < 2:
-            continue
-        if token in stop_words:
-            continue
-        if token in CUSTOM_GARBAGE:
-            continue
-        result.append(token)
-
-    return result
-
-
-def read_index_mapping(index_txt_path: Path) -> dict[str, dict]:
-    """
-    Читает index.txt формата:
-    <номер>\t<имя_файла>\t<url>
-    """
+def read_mapping(index_txt_path: Path) -> dict[str, dict]:
     documents = {}
 
     for line in index_txt_path.read_text(encoding="utf-8").splitlines():
@@ -84,33 +25,48 @@ def read_index_mapping(index_txt_path: Path) -> dict[str, dict]:
     return documents
 
 
-def build_inverted_index(
-    dump_dir: Path,
-    index_txt_path: Path,
-    lang: str,
-) -> dict:
-    ensure_nltk_resources()
-    stop_words = load_stopwords(lang)
-    morph = MorphAnalyzer()
+def build_doc_id_map(documents: dict[str, dict]) -> dict[str, str]:
+    """
+    Преобразует:
+    0001.html -> 1
+    """
+    result = {}
+    for doc_id, meta in documents.items():
+        stem = Path(meta["filename"]).stem
+        result[stem] = doc_id
+    return result
 
-    documents = read_index_mapping(index_txt_path)
+
+def read_values(path: Path) -> list[str]:
+    values = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            values.append(line)
+    return values
+
+
+def build_inverted_index(
+    lemmas_dir: Path,
+    index_txt_path: Path,
+) -> dict:
+    documents = read_mapping(index_txt_path)
+    stem_to_doc_id = build_doc_id_map(documents)
+
     inverted_index = defaultdict(set)
 
-    for doc_id, meta in documents.items():
-        file_path = dump_dir / meta["filename"]
-        if not file_path.exists():
+    lemma_files = sorted(lemmas_dir.glob("*_lemmas.txt"))
+
+    for lemma_file in lemma_files:
+        stem = lemma_file.stem.replace("_lemmas", "")
+        doc_id = stem_to_doc_id.get(stem)
+
+        if not doc_id:
             continue
 
-        html = file_path.read_text(encoding="utf-8", errors="ignore")
-        text = html_to_text(html)
-        tokens = extract_tokens(text, stop_words)
+        lemmas = set(read_values(lemma_file))
 
-        lemmas_in_doc = set()
-        for token in tokens:
-            lemma = morph.parse(token)[0].normal_form
-            lemmas_in_doc.add(lemma)
-
-        for lemma in lemmas_in_doc:
+        for lemma in lemmas:
             inverted_index[lemma].add(doc_id)
 
     serializable_index = {
@@ -133,35 +89,32 @@ def save_json_index(index_data: dict, output_path: Path) -> None:
 def save_txt_index(index_data: dict, output_path: Path) -> None:
     lines = []
     for lemma, doc_ids in index_data["index"].items():
-        line = f"{lemma} " + " ".join(doc_ids)
-        lines.append(line)
+        lines.append(f"{lemma} " + " ".join(doc_ids))
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build inverted index from saved HTML pages.")
-    parser.add_argument("--dump", default="dump", help="Directory with HTML files")
-    parser.add_argument("--mapping", default="index.txt", help="index.txt with file mapping")
-    parser.add_argument("--lang", default="ru", choices=["ru", "en"], help="Document language")
+    parser = argparse.ArgumentParser(description="Build inverted index from per-document lemma files.")
+    parser.add_argument("--lemmas-dir", default="lemmas_by_doc", help="Directory with *_lemmas.txt files")
+    parser.add_argument("--mapping", default="index.txt", help="index.txt mapping file")
     parser.add_argument("--json-out", default="inverted_index.json", help="JSON index output")
     parser.add_argument("--txt-out", default="inverted_index.txt", help="TXT index output")
 
     args = parser.parse_args()
 
-    dump_dir = Path(args.dump)
+    lemmas_dir = Path(args.lemmas_dir)
     mapping_path = Path(args.mapping)
     json_out = Path(args.json_out)
     txt_out = Path(args.txt_out)
 
-    if not dump_dir.exists():
-        raise FileNotFoundError(f"Dump directory not found: {dump_dir}")
+    if not lemmas_dir.exists():
+        raise FileNotFoundError(f"Lemmas directory not found: {lemmas_dir}")
     if not mapping_path.exists():
         raise FileNotFoundError(f"Mapping file not found: {mapping_path}")
 
     index_data = build_inverted_index(
-        dump_dir=dump_dir,
+        lemmas_dir=lemmas_dir,
         index_txt_path=mapping_path,
-        lang=args.lang,
     )
 
     save_json_index(index_data, json_out)

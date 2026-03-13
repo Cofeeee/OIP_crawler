@@ -3,67 +3,8 @@ import math
 from collections import Counter
 from pathlib import Path
 
-import nltk
-import regex as re
-from bs4 import BeautifulSoup
-from pymorphy3 import MorphAnalyzer
-
-
-CUSTOM_GARBAGE = {
-    "nbsp", "html", "body", "div", "span", "href", "http", "https",
-    "img", "src", "script", "style", "php", "wiki"
-}
-
-
-def ensure_nltk_resources() -> None:
-    try:
-        nltk.data.find("corpora/stopwords")
-    except LookupError:
-        nltk.download("stopwords")
-
-
-def load_stopwords(lang: str) -> set[str]:
-    from nltk.corpus import stopwords
-
-    if lang == "ru":
-        return set(stopwords.words("russian"))
-    if lang == "en":
-        return set(stopwords.words("english"))
-    raise ValueError(f"Unsupported language: {lang}")
-
-
-def html_to_text(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-
-    for tag in soup(["script", "style", "noscript"]):
-        tag.decompose()
-
-    text = soup.get_text(separator=" ")
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def extract_tokens(text: str, stop_words: set[str]) -> list[str]:
-    raw_tokens = re.findall(r"\p{L}+", text.lower())
-
-    tokens = []
-    for token in raw_tokens:
-        if len(token) < 2:
-            continue
-        if token in stop_words:
-            continue
-        if token in CUSTOM_GARBAGE:
-            continue
-        tokens.append(token)
-
-    return tokens
-
 
 def read_mapping(index_txt_path: Path) -> dict[str, dict]:
-    """
-    index.txt format:
-    <doc_id>\t<filename>\t<url>
-    """
     documents = {}
 
     for line in index_txt_path.read_text(encoding="utf-8").splitlines():
@@ -84,31 +25,35 @@ def read_mapping(index_txt_path: Path) -> dict[str, dict]:
     return documents
 
 
-def parse_documents(
-    dump_dir: Path,
-    mapping_path: Path,
-    lang: str,
-) -> tuple[dict[str, dict], dict[str, list[str]]]:
-    ensure_nltk_resources()
-    stop_words = load_stopwords(lang)
-    morph = MorphAnalyzer()
+def build_doc_id_map(documents: dict[str, dict]) -> dict[str, str]:
+    result = {}
+    for doc_id, meta in documents.items():
+        stem = Path(meta["filename"]).stem
+        result[stem] = doc_id
+    return result
 
-    documents = read_mapping(mapping_path)
+
+def read_values(path: Path) -> list[str]:
+    values = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line:
+            values.append(line)
+    return values
+
+
+def load_doc_lemmas(lemmas_dir: Path, documents: dict[str, dict]) -> dict[str, list[str]]:
+    stem_to_doc_id = build_doc_id_map(documents)
     doc_lemmas = {}
 
-    for doc_id, meta in documents.items():
-        file_path = dump_dir / meta["filename"]
-        if not file_path.exists():
+    for path in sorted(lemmas_dir.glob("*_lemmas.txt")):
+        stem = path.stem.replace("_lemmas", "")
+        doc_id = stem_to_doc_id.get(stem)
+        if not doc_id:
             continue
+        doc_lemmas[doc_id] = read_values(path)
 
-        html = file_path.read_text(encoding="utf-8", errors="ignore")
-        text = html_to_text(html)
-        tokens = extract_tokens(text, stop_words)
-        lemmas = [morph.parse(token)[0].normal_form for token in tokens]
-
-        doc_lemmas[doc_id] = lemmas
-
-    return documents, doc_lemmas
+    return doc_lemmas
 
 
 def compute_idf(doc_lemmas: dict[str, list[str]]) -> dict[str, float]:
@@ -126,10 +71,7 @@ def compute_idf(doc_lemmas: dict[str, list[str]]) -> dict[str, float]:
     return idf
 
 
-def compute_doc_vectors(
-    doc_lemmas: dict[str, list[str]],
-    idf: dict[str, float],
-) -> dict[str, dict[str, float]]:
+def compute_doc_vectors(doc_lemmas: dict[str, list[str]], idf: dict[str, float]) -> dict[str, dict[str, float]]:
     doc_vectors = {}
 
     for doc_id, lemmas in doc_lemmas.items():
@@ -150,14 +92,8 @@ def compute_doc_vectors(
     return doc_vectors
 
 
-def normalize_query(query: str, lang: str) -> list[str]:
-    ensure_nltk_resources()
-    stop_words = load_stopwords(lang)
-    morph = MorphAnalyzer()
-
-    tokens = extract_tokens(query, stop_words)
-    lemmas = [morph.parse(token)[0].normal_form for token in tokens]
-    return lemmas
+def normalize_query(query: str) -> list[str]:
+    return [part.strip().lower() for part in query.split() if part.strip()]
 
 
 def build_query_vector(query_lemmas: list[str], idf: dict[str, float]) -> dict[str, float]:
@@ -196,10 +132,9 @@ def search(
     documents: dict[str, dict],
     doc_vectors: dict[str, dict[str, float]],
     idf: dict[str, float],
-    lang: str,
     top_k: int,
 ) -> list[tuple[str, float]]:
-    query_lemmas = normalize_query(query, lang)
+    query_lemmas = normalize_query(query)
     query_vector = build_query_vector(query_lemmas, idf)
 
     results = []
@@ -229,29 +164,24 @@ def print_results(results: list[tuple[str, float]], documents: dict[str, dict]) 
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Vector search over downloaded HTML documents.")
-    parser.add_argument("--dump", default="dump", help="Directory with HTML files")
+    parser = argparse.ArgumentParser(description="Vector search over per-document lemma files.")
+    parser.add_argument("--lemmas-dir", default="lemmas_by_doc", help="Directory with *_lemmas.txt")
     parser.add_argument("--mapping", default="index.txt", help="index.txt mapping file")
-    parser.add_argument("--lang", default="ru", choices=["ru", "en"], help="Language")
     parser.add_argument("--query", required=True, help="Search query string")
     parser.add_argument("--top-k", type=int, default=10, help="Number of top results")
 
     args = parser.parse_args()
 
-    dump_dir = Path(args.dump)
+    lemmas_dir = Path(args.lemmas_dir)
     mapping_path = Path(args.mapping)
 
-    if not dump_dir.exists():
-        raise FileNotFoundError(f"Dump directory not found: {dump_dir}")
+    if not lemmas_dir.exists():
+        raise FileNotFoundError(f"Lemmas directory not found: {lemmas_dir}")
     if not mapping_path.exists():
         raise FileNotFoundError(f"Mapping file not found: {mapping_path}")
 
-    documents, doc_lemmas = parse_documents(
-        dump_dir=dump_dir,
-        mapping_path=mapping_path,
-        lang=args.lang,
-    )
-
+    documents = read_mapping(mapping_path)
+    doc_lemmas = load_doc_lemmas(lemmas_dir, documents)
     idf = compute_idf(doc_lemmas)
     doc_vectors = compute_doc_vectors(doc_lemmas, idf)
 
@@ -260,7 +190,6 @@ def main() -> None:
         documents=documents,
         doc_vectors=doc_vectors,
         idf=idf,
-        lang=args.lang,
         top_k=args.top_k,
     )
 
