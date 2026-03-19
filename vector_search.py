@@ -4,6 +4,8 @@ from collections import Counter
 from pathlib import Path
 
 
+# Читает index.txt и строит словарь документов:
+# doc_id -> {"filename": ..., "url": ...}
 def read_mapping(index_txt_path: Path) -> dict[str, dict]:
     documents = {}
 
@@ -25,6 +27,9 @@ def read_mapping(index_txt_path: Path) -> dict[str, dict]:
     return documents
 
 
+# Строит отображение:
+# имя html-файла без расширения -> doc_id
+# Например: "0001" -> "1"
 def build_doc_id_map(documents: dict[str, dict]) -> dict[str, str]:
     result = {}
     for doc_id, meta in documents.items():
@@ -33,6 +38,7 @@ def build_doc_id_map(documents: dict[str, dict]) -> dict[str, str]:
     return result
 
 
+# Читает текстовый файл построчно и возвращает список непустых строк
 def read_values(path: Path) -> list[str]:
     values = []
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -42,6 +48,9 @@ def read_values(path: Path) -> list[str]:
     return values
 
 
+# Загружает леммы всех документов из папки lemmas_by_doc
+# Возвращает словарь:
+# doc_id -> [lemma1, lemma2, ...]
 def load_doc_lemmas(lemmas_dir: Path, documents: dict[str, dict]) -> dict[str, list[str]]:
     stem_to_doc_id = build_doc_id_map(documents)
     doc_lemmas = {}
@@ -56,6 +65,9 @@ def load_doc_lemmas(lemmas_dir: Path, documents: dict[str, dict]) -> dict[str, l
     return doc_lemmas
 
 
+# Считает IDF для каждой леммы
+# Формула: idf = log(N / df)
+# где N — число документов, df — в скольких документах встретилась лемма
 def compute_idf(doc_lemmas: dict[str, list[str]]) -> dict[str, float]:
     num_docs = len(doc_lemmas)
     df_counter = Counter()
@@ -71,6 +83,10 @@ def compute_idf(doc_lemmas: dict[str, list[str]]) -> dict[str, float]:
     return idf
 
 
+# Строит TF-IDF вектор для каждого документа
+# Для каждой леммы:
+# tf = count / total_terms
+# weight = tf * idf
 def compute_doc_vectors(doc_lemmas: dict[str, list[str]], idf: dict[str, float]) -> dict[str, dict[str, float]]:
     doc_vectors = {}
 
@@ -92,10 +108,14 @@ def compute_doc_vectors(doc_lemmas: dict[str, list[str]], idf: dict[str, float])
     return doc_vectors
 
 
+# Нормализует запрос:
+# разбивает по пробелам и переводит к нижнему регистру
 def normalize_query(query: str) -> list[str]:
     return [part.strip().lower() for part in query.split() if part.strip()]
 
 
+# Строит TF-IDF вектор для запроса
+# Логика такая же, как и для документов
 def build_query_vector(query_lemmas: list[str], idf: dict[str, float]) -> dict[str, float]:
     total_terms = len(query_lemmas)
     if total_terms == 0:
@@ -111,6 +131,8 @@ def build_query_vector(query_lemmas: list[str], idf: dict[str, float]) -> dict[s
     return vector
 
 
+# Считает косинусное сходство двух векторов
+# Чем ближе значение к 1, тем документы более похожи
 def cosine_similarity(vec1: dict[str, float], vec2: dict[str, float]) -> float:
     if not vec1 or not vec2:
         return 0.0
@@ -127,6 +149,11 @@ def cosine_similarity(vec1: dict[str, float], vec2: dict[str, float]) -> float:
     return dot_product / (norm1 * norm2)
 
 
+# Выполняет поиск:
+# 1. нормализует запрос
+# 2. строит вектор запроса
+# 3. считает сходство с каждым документом
+# 4. сортирует документы по убыванию релевантности
 def search(
     query: str,
     documents: dict[str, dict],
@@ -147,6 +174,7 @@ def search(
     return results[:top_k]
 
 
+# Красиво выводит найденные документы в консоль
 def print_results(results: list[tuple[str, float]], documents: dict[str, dict]) -> None:
     if not results:
         print("Ничего не найдено.")
@@ -163,6 +191,9 @@ def print_results(results: list[tuple[str, float]], documents: dict[str, dict]) 
         )
 
 
+# Точка входа в программу:
+# читает аргументы командной строки,
+# загружает данные, строит векторы и запускает поиск
 def main() -> None:
     parser = argparse.ArgumentParser(description="Vector search over per-document lemma files.")
     parser.add_argument("--lemmas-dir", default="lemmas_by_doc", help="Directory with *_lemmas.txt")
